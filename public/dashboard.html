@@ -1,0 +1,356 @@
+
+cat > public/dashboard.html << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Usage Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: white;
+            margin-bottom: 30px;
+            font-size: 36px;
+            text-align: center;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.2s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 12px rgba(0,0,0,0.15);
+        }
+        
+        .stat-number {
+            font-size: 48px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+        
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        tr:hover {
+            background: #f8f9ff;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: white;
+        }
+        
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .refresh-btn {
+            background: white;
+            color: #667eea;
+            border: 2px solid white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .refresh-btn:hover {
+            background: #667eea;
+            color: white;
+            transform: scale(1.05);
+        }
+        
+        .user-id {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f5f5f5;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .cost {
+            color: #10b981;
+            font-weight: 600;
+        }
+        
+        .timestamp {
+            color: #888;
+            font-size: 12px;
+        }
+
+        .error {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            color: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Usage Dashboard</h1>
+        
+        <button class="refresh-btn" onclick="loadDashboard()">🔄 Refresh Data</button>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Loading dashboard...</p>
+        </div>
+        
+        <div id="content" style="display: none;">
+            <div class="stats-grid" id="stats"></div>
+            
+            <div class="card">
+                <h2>👥 All Users</h2>
+                <div id="users-table"></div>
+            </div>
+            
+            <div class="card">
+                <h2>📈 Recent Activity (Last 24 Hours)</h2>
+                <div id="recent-activity"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadDashboard() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('content').style.display = 'none';
+            
+            try {
+                // Fetch summary
+                const summaryResponse = await fetch('/api/analytics/summary');
+                if (!summaryResponse.ok) throw new Error('Failed to fetch summary');
+                const summary = await summaryResponse.json();
+                
+                // Fetch all users
+                const allUsersResponse = await fetch('/api/analytics/all');
+                if (!allUsersResponse.ok) throw new Error('Failed to fetch users');
+                const allUsers = await allUsersResponse.json();
+                
+                // Fetch recent activity
+                const recentResponse = await fetch('/api/analytics/recent?hours=24');
+                if (!recentResponse.ok) throw new Error('Failed to fetch recent activity');
+                const recent = await recentResponse.json();
+                
+                // Display stats
+                displayStats(summary);
+                displayUsers(allUsers);
+                displayRecentActivity(recent);
+                
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                document.getElementById('loading').innerHTML = `
+                    <div class="error">
+                        <h2>⚠️ Error Loading Dashboard</h2>
+                        <p>${error.message}</p>
+                        <button class="refresh-btn" onclick="loadDashboard()" style="margin-top: 20px;">Try Again</button>
+                    </div>
+                `;
+            }
+        }
+        
+        function displayStats(summary) {
+            const stats = summary.overview;
+            document.getElementById('stats').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-number">${stats.totalUsers}</div>
+                    <div class="stat-label">Total Users</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.totalRequests.toLocaleString()}</div>
+                    <div class="stat-label">Total Requests</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.totalTokens.toLocaleString()}</div>
+                    <div class="stat-label">Total Tokens</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">$${stats.totalCost.toFixed(4)}</div>
+                    <div class="stat-label">Total Cost</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.activeToday}</div>
+                    <div class="stat-label">Active Today</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.averageRequestsPerUser}</div>
+                    <div class="stat-label">Avg Requests/User</div>
+                </div>
+            `;
+        }
+        
+        function displayUsers(data) {
+            if (!data.users || Object.keys(data.users).length === 0) {
+                document.getElementById('users-table').innerHTML = '<p>No users yet. Make some requests first!</p>';
+                return;
+            }
+
+            const users = Object.entries(data.users).sort((a, b) => b[1].totalRequests - a[1].totalRequests);
+            
+            let html = '<table><thead><tr>';
+            html += '<th>User ID</th>';
+            html += '<th>Requests</th>';
+            html += '<th>Tokens</th>';
+            html += '<th>Cost</th>';
+            html += '<th>First Seen</th>';
+            html += '<th>Last Seen</th>';
+            html += '</tr></thead><tbody>';
+            
+            users.forEach(([userId, stats]) => {
+                const firstSeen = new Date(stats.firstSeen).toLocaleString();
+                const lastSeen = new Date(stats.lastSeen).toLocaleString();
+                
+                html += '<tr>';
+                html += `<td><span class="user-id">${userId}</span></td>`;
+                html += `<td><strong>${stats.totalRequests}</strong></td>`;
+                html += `<td>${stats.totalTokens.toLocaleString()}</td>`;
+                html += `<td class="cost">$${stats.totalCost.toFixed(4)}</td>`;
+                html += `<td class="timestamp">${firstSeen}</td>`;
+                html += `<td class="timestamp">${lastSeen}</td>`;
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table>';
+            document.getElementById('users-table').innerHTML = html;
+        }
+        
+        function displayRecentActivity(data) {
+            if (!data.logs || data.logs.length === 0) {
+                document.getElementById('recent-activity').innerHTML = '<p>No recent activity in the last 24 hours.</p>';
+                return;
+            }
+
+            let html = '<table><thead><tr>';
+            html += '<th>Time</th>';
+            html += '<th>User ID</th>';
+            html += '<th>Endpoint</th>';
+            html += '<th>Model</th>';
+            html += '<th>Tokens</th>';
+            html += '<th>Cost</th>';
+            html += '</tr></thead><tbody>';
+            
+            data.logs.slice(0, 50).forEach(log => {
+                const time = new Date(log.timestamp).toLocaleString();
+                
+                html += '<tr>';
+                html += `<td class="timestamp">${time}</td>`;
+                html += `<td><span class="user-id">${log.userId.substring(0, 12)}...</span></td>`;
+                html += `<td>${log.endpoint}</td>`;
+                html += `<td>${log.model || 'N/A'}</td>`;
+                html += `<td>${log.tokens.total.toLocaleString()}</td>`;
+                html += `<td class="cost">$${log.cost.toFixed(4)}</td>`;
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table>';
+            
+            if (data.logs.length > 50) {
+                html += `<p style="margin-top: 20px; color: #666;">Showing 50 of ${data.logs.length} recent requests</p>`;
+            }
+            
+            document.getElementById('recent-activity').innerHTML = html;
+        }
+        
+        // Load dashboard on page load
+        loadDashboard();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadDashboard, 30000);
+    </script>
+</body>
+</html>
+EOF
