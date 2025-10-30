@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const fileUpload = require('express-fileupload');
 const cors = require('cors');
+const path = require('path');
 const loggingMiddleware = require('./middleware/loggingMiddleware');
 const logger = require('./logger');
 require('dotenv').config();
@@ -15,6 +16,9 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(fileUpload({
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max file size
 }));
+
+// Serve static files from public directory
+app.use(express.static('public'));
 
 // Configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -51,9 +55,6 @@ const verifyRequest = (req, res, next) => {
     next();
 };
 
-// Apply logging middleware to API routes (AFTER auth, so we only log authorized requests)
-app.use('/api', verifyRequest, loggingMiddleware);
-
 // Health check endpoint (no auth required)
 app.get('/health', (req, res) => {
     res.json({
@@ -65,100 +66,9 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Chat completions endpoint
-app.post('/api/chat/completions', async (req, res) => {
-    console.log('Received chat completion request');
-    
-    try {
-        const response = await axios.post(
-            'https://api.openai.com/v1/chat/completions',
-            req.body,
-            {
-                headers: {
-                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 190000 // 190 seconds
-            }
-        );
-        
-        console.log('Successfully proxied chat request to OpenAI');
-        res.json(response.data);
-        
-    } catch (error) {
-        console.error('OpenAI API Error:', error.response?.data || error.message);
-        
-        const statusCode = error.response?.status || 500;
-        const errorData = error.response?.data || {
-            error: {
-                message: error.message || 'Internal server error',
-                type: 'proxy_error'
-            }
-        };
-        
-        res.status(statusCode).json(errorData);
-    }
-});
-
-// Whisper transcription endpoint
-app.post('/api/audio/transcriptions', async (req, res) => {
-    console.log('Received audio transcription request');
-    
-    try {
-        // Check if file was uploaded
-        if (!req.files || !req.files.file) {
-            return res.status(400).json({
-                error: { message: 'No audio file provided' }
-            });
-        }
-        
-        const FormData = require('form-data');
-        const form = new FormData();
-        
-        // Add the audio file
-        const audioFile = req.files.file;
-        form.append('file', audioFile.data, {
-            filename: audioFile.name,
-            contentType: audioFile.mimetype
-        });
-        
-        // Add model parameter
-        form.append('model', req.body.model || 'whisper-1');
-        
-        const response = await axios.post(
-            'https://api.openai.com/v1/audio/transcriptions',
-            form,
-            {
-                headers: {
-                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                    ...form.getHeaders()
-                },
-                timeout: 190000,
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity
-            }
-        );
-        
-        console.log('Successfully transcribed audio via OpenAI');
-        res.json(response.data);
-        
-    } catch (error) {
-        console.error('Whisper API Error:', error.response?.data || error.message);
-        
-        const statusCode = error.response?.status || 500;
-        const errorData = error.response?.data || {
-            error: {
-                message: error.message || 'Internal server error',
-                type: 'proxy_error'
-            }
-        };
-        
-        res.status(statusCode).json(errorData);
-    }
-});
-
 // ============================================
-// ANALYTICS ENDPOINTS (NEW)
+// PUBLIC ANALYTICS ENDPOINTS (NO AUTH REQUIRED)
+// These MUST be before app.use('/api', verifyRequest, loggingMiddleware)
 // ============================================
 
 // Get stats for a specific user
@@ -295,6 +205,105 @@ app.get('/api/analytics/summary', async (req, res) => {
     }
 });
 
+// ============================================
+// PROTECTED API ENDPOINTS (REQUIRE AUTH)
+// Apply logging middleware to API routes (AFTER analytics, so analytics are public)
+// ============================================
+
+app.use('/api', verifyRequest, loggingMiddleware);
+
+// Chat completions endpoint
+app.post('/api/chat/completions', async (req, res) => {
+    console.log('Received chat completion request');
+    
+    try {
+        const response = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            req.body,
+            {
+                headers: {
+                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 190000 // 190 seconds
+            }
+        );
+        
+        console.log('Successfully proxied chat request to OpenAI');
+        res.json(response.data);
+        
+    } catch (error) {
+        console.error('OpenAI API Error:', error.response?.data || error.message);
+        
+        const statusCode = error.response?.status || 500;
+        const errorData = error.response?.data || {
+            error: {
+                message: error.message || 'Internal server error',
+                type: 'proxy_error'
+            }
+        };
+        
+        res.status(statusCode).json(errorData);
+    }
+});
+
+// Whisper transcription endpoint
+app.post('/api/audio/transcriptions', async (req, res) => {
+    console.log('Received audio transcription request');
+    
+    try {
+        // Check if file was uploaded
+        if (!req.files || !req.files.file) {
+            return res.status(400).json({
+                error: { message: 'No audio file provided' }
+            });
+        }
+        
+        const FormData = require('form-data');
+        const form = new FormData();
+        
+        // Add the audio file
+        const audioFile = req.files.file;
+        form.append('file', audioFile.data, {
+            filename: audioFile.name,
+            contentType: audioFile.mimetype
+        });
+        
+        // Add model parameter
+        form.append('model', req.body.model || 'whisper-1');
+        
+        const response = await axios.post(
+            'https://api.openai.com/v1/audio/transcriptions',
+            form,
+            {
+                headers: {
+                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                    ...form.getHeaders()
+                },
+                timeout: 190000,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            }
+        );
+        
+        console.log('Successfully transcribed audio via OpenAI');
+        res.json(response.data);
+        
+    } catch (error) {
+        console.error('Whisper API Error:', error.response?.data || error.message);
+        
+        const statusCode = error.response?.status || 500;
+        const errorData = error.response?.data || {
+            error: {
+                message: error.message || 'Internal server error',
+                type: 'proxy_error'
+            }
+        };
+        
+        res.status(statusCode).json(errorData);
+    }
+});
+
 // Catch-all for undefined routes
 app.use((req, res) => {
     res.status(404).json({
@@ -321,6 +330,7 @@ app.listen(PORT, () => {
     console.log(`✅ API Secret: ${API_SECRET ? 'Set' : 'NOT SET'}`);
     console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`📊 Usage logging: ENABLED`);
+    console.log(`🌐 Dashboard available at /dashboard`);
 });
 
 // Graceful shutdown
