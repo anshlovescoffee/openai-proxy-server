@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const fileUpload = require('express-fileupload');
 const cors = require('cors');
+const loggingMiddleware = require('./middleware/loggingMiddleware');
+const logger = require('./logger');
 require('dotenv').config();
 
 const app = express();
@@ -49,18 +51,22 @@ const verifyRequest = (req, res, next) => {
     next();
 };
 
+// Apply logging middleware to API routes (AFTER auth, so we only log authorized requests)
+app.use('/api', verifyRequest, loggingMiddleware);
+
 // Health check endpoint (no auth required)
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
+    res.json({
+        status: 'ok',
         timestamp: new Date().toISOString(),
         hasOpenAIKey: !!OPENAI_API_KEY,
-        hasAPISecret: !!API_SECRET
+        hasAPISecret: !!API_SECRET,
+        loggingEnabled: true
     });
 });
 
 // Chat completions endpoint
-app.post('/api/chat/completions', verifyRequest, async (req, res) => {
+app.post('/api/chat/completions', async (req, res) => {
     console.log('Received chat completion request');
     
     try {
@@ -83,11 +89,11 @@ app.post('/api/chat/completions', verifyRequest, async (req, res) => {
         console.error('OpenAI API Error:', error.response?.data || error.message);
         
         const statusCode = error.response?.status || 500;
-        const errorData = error.response?.data || { 
-            error: { 
+        const errorData = error.response?.data || {
+            error: {
                 message: error.message || 'Internal server error',
                 type: 'proxy_error'
-            } 
+            }
         };
         
         res.status(statusCode).json(errorData);
@@ -95,14 +101,14 @@ app.post('/api/chat/completions', verifyRequest, async (req, res) => {
 });
 
 // Whisper transcription endpoint
-app.post('/api/audio/transcriptions', verifyRequest, async (req, res) => {
+app.post('/api/audio/transcriptions', async (req, res) => {
     console.log('Received audio transcription request');
     
     try {
         // Check if file was uploaded
         if (!req.files || !req.files.file) {
-            return res.status(400).json({ 
-                error: { message: 'No audio file provided' } 
+            return res.status(400).json({
+                error: { message: 'No audio file provided' }
             });
         }
         
@@ -140,21 +146,158 @@ app.post('/api/audio/transcriptions', verifyRequest, async (req, res) => {
         console.error('Whisper API Error:', error.response?.data || error.message);
         
         const statusCode = error.response?.status || 500;
-        const errorData = error.response?.data || { 
-            error: { 
+        const errorData = error.response?.data || {
+            error: {
                 message: error.message || 'Internal server error',
                 type: 'proxy_error'
-            } 
+            }
         };
         
         res.status(statusCode).json(errorData);
     }
 });
 
-// Catch-all for undefined routes
+// ============================================
+// ANALYTICS ENDPOINTS (NEW)
+// ============================================
+
+// Get stats for a specific user
+app.get('/api/analytics/user/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const stats = await logger.getUserStats(userId);
+        
+        if (!stats) {
+            return res.status(404).json({
+                error: 'User not found',
+                message: 'No usage data found for this user'
+            });
+        }
+        
+        res.json(stats);
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch user analytics',
+            message: error.message
+        });
+    }
+});
+
+// Get stats for all users
+app.get('/api/analytics/all', async (req, res) => {
+    try {
+        const stats = await logger.getAllUserStats();
+        
+        // Add summary totals
+        const summary = {
+            totalUsers: Object.keys(stats).length,
+            totalRequests: 0,
+            totalTokens: 0,
+            totalCost: 0,
+            users: stats
+        };
+        
+        Object.values(stats).forEach(user => {
+            summary.totalRequests += user.totalRequests;
+            summary.totalTokens += user.totalTokens;
+            summary.totalCost += user.totalCost;
+        });
+        
+        res.json(summary);
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch analytics',
+            message: error.message
+        });
+    }
+});
+
+// Get recent activity (last N hours)
+app.get('/api/analytics/recent', async (req, res) => {
+    try {
+        const hours = parseInt(req.query.hours) || 24;
+        const logs = await logger.getRecentLogs(hours);
+        
+        res.json({
+            period: `Last ${hours} hours`,
+            count: logs.length,
+            logs: logs
+        });
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch recent logs',
+            message: error.message
+        });
+    }
+});
+
+// Get usage summary (aggregated stats)
+app.get('/api/analytics/summary', async (req, res) => {
+    try {
+        const allStats = await logger.getAllUserStats();
+        const recentLogs = await logger.getRecentLogs(24);
+        
+        // Calculate totals
+        let totalUsers = 0;
+        let totalRequests = 0;
+        let totalTokens = 0;
+        let totalCost = 0;
+        let activeToday = 0;
+        
+        const now = new Date();
+        const today = now.toISOString().split('T')[0];
+        
+        Object.entries(allStats).forEach(([userId, stats]) => {
+            totalUsers++;
+            totalRequests += stats.totalRequests;
+            totalTokens += stats.totalTokens;
+            totalCost += stats.totalCost;
+            
+            // Check if user was active today
+            if (stats.lastSeen && stats.lastSeen.startsWith(today)) {
+                activeToday++;
+            }
+        });
+        
+        // Aggregate by model
+        const modelBreakdown = {};
+        Object.values(allStats).forEach(stats => {
+            Object.entries(stats.modelCounts || {}).forEach(([model, count]) => {
+                modelBreakdown[model] = (modelBreakdown[model] || 0) + count;
+            });
+        });
+        
+        res.json({
+            overview: {
+                totalUsers,
+                activeToday,
+                totalRequests,
+                totalTokens,
+                totalCost: parseFloat(totalCost.toFixed(4)),
+                averageRequestsPerUser: totalUsers > 0 ? Math.round(totalRequests / totalUsers) : 0
+            },
+            last24Hours: {
+                requests: recentLogs.length,
+                uniqueUsers: new Set(recentLogs.map(log => log.userId)).size
+            },
+            modelBreakdown,
+            timestamp: now.toISOString()
+        });
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch summary',
+            message: error.message
+        });
+    }
+});
+
 // Catch-all for undefined routes
 app.use((req, res) => {
-    res.status(404).json({ 
+    res.status(404).json({
         error: 'Not Found',
         message: 'The requested endpoint does not exist'
     });
@@ -163,11 +306,11 @@ app.use((req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error('Unhandled error:', err);
-    res.status(500).json({ 
-        error: { 
+    res.status(500).json({
+        error: {
             message: 'Internal server error',
             type: 'server_error'
-        } 
+        }
     });
 });
 
@@ -177,6 +320,7 @@ app.listen(PORT, () => {
     console.log(`✅ OpenAI API Key: ${OPENAI_API_KEY ? 'Set' : 'NOT SET'}`);
     console.log(`✅ API Secret: ${API_SECRET ? 'Set' : 'NOT SET'}`);
     console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`📊 Usage logging: ENABLED`);
 });
 
 // Graceful shutdown
