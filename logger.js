@@ -23,17 +23,21 @@ class UsageLogger {
         const timestamp = new Date().toISOString();
         const date = timestamp.split('T')[0];
         
+        // Determine provider from endpoint or model
+        const provider = this.detectProvider(endpoint, model);
+        
         const logEntry = {
             timestamp,
             userId,
             endpoint,
+            provider,
             model,
             tokens: {
                 prompt: responseData?.usage?.prompt_tokens || 0,
                 completion: responseData?.usage?.completion_tokens || 0,
                 total: responseData?.usage?.total_tokens || 0
             },
-            cost: this.calculateCost(model, responseData?.usage),
+            cost: this.calculateCost(model, responseData?.usage, provider),
             success: !!responseData && !responseData.error,
             error: responseData?.error?.message || null
         };
@@ -54,21 +58,53 @@ class UsageLogger {
         await this.updateUserSummary(userId, logEntry);
     }
     
-    calculateCost(model, usage) {
+    detectProvider(endpoint, model) {
+        if (endpoint.includes('anthropic') || model?.includes('claude')) {
+            return 'anthropic';
+        } else if (endpoint.includes('google') || model?.includes('gemini')) {
+            return 'google';
+        } else {
+            return 'openai';
+        }
+    }
+    
+    calculateCost(model, usage, provider = 'openai') {
         if (!usage) return 0;
         
         // Approximate costs per 1M tokens (update with actual pricing)
         const pricing = {
+            // OpenAI models
             'gpt-4': { input: 30, output: 60 },
             'gpt-4o': { input: 5, output: 15 },
             'gpt-4o-mini': { input: 0.15, output: 0.6 },
             'gpt-5': { input: 10, output: 30 },
+            'gpt-5.2': { input: 12, output: 36 },
+            'gpt-5-nano': { input: 2, output: 6 },
             'o1-preview': { input: 15, output: 60 },
             'o1-mini': { input: 3, output: 12 },
-            'gpt-3.5-turbo': { input: 0.5, output: 1.5 }
+            'gpt-3.5-turbo': { input: 0.5, output: 1.5 },
+            
+            // Anthropic models
+            'claude-sonnet-4-20250514': { input: 3, output: 15 },
+            'claude-3-5-sonnet-20241022': { input: 3, output: 15 },
+            'claude-3-opus-20240229': { input: 15, output: 75 },
+            'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
+            
+            // Google models
+            'gemini-2.5-pro': { input: 1.25, output: 5 },
+            'gemini-2.0-flash': { input: 0.075, output: 0.3 },
+            'gemini-1.5-pro': { input: 1.25, output: 5 },
+            'gemini-1.5-flash': { input: 0.075, output: 0.3 }
         };
         
-        const modelPricing = pricing[model] || pricing['gpt-4o'];
+        // Default pricing based on provider
+        const defaultPricing = {
+            'openai': { input: 5, output: 15 },
+            'anthropic': { input: 3, output: 15 },
+            'google': { input: 1.25, output: 5 }
+        };
+        
+        const modelPricing = pricing[model] || defaultPricing[provider] || defaultPricing['openai'];
         const inputCost = (usage.prompt_tokens / 1000000) * modelPricing.input;
         const outputCost = (usage.completion_tokens / 1000000) * modelPricing.output;
         
@@ -95,7 +131,8 @@ class UsageLogger {
                     totalTokens: 0,
                     totalCost: 0,
                     endpointCounts: {},
-                    modelCounts: {}
+                    modelCounts: {},
+                    providerCounts: {}
                 };
             }
             
@@ -110,6 +147,9 @@ class UsageLogger {
             
             userSummary.modelCounts[logEntry.model] =
                 (userSummary.modelCounts[logEntry.model] || 0) + 1;
+            
+            userSummary.providerCounts[logEntry.provider] =
+                (userSummary.providerCounts[logEntry.provider] || 0) + 1;
             
             await fs.writeFile(summaryFile, JSON.stringify(summaries, null, 2));
         } catch (error) {

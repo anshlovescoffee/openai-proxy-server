@@ -22,13 +22,22 @@ app.use(express.static('public'));
 
 // Configuration
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const API_SECRET = process.env.API_SECRET;
 const PORT = process.env.PORT || 3000;
 
 // Verify environment variables
 if (!OPENAI_API_KEY) {
-    console.error('ERROR: OPENAI_API_KEY environment variable is not set');
-    process.exit(1);
+    console.error('WARNING: OPENAI_API_KEY environment variable is not set');
+}
+
+if (!ANTHROPIC_API_KEY) {
+    console.error('WARNING: ANTHROPIC_API_KEY environment variable is not set');
+}
+
+if (!GOOGLE_API_KEY) {
+    console.error('WARNING: GOOGLE_API_KEY environment variable is not set');
 }
 
 if (!API_SECRET) {
@@ -61,8 +70,15 @@ app.get('/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         hasOpenAIKey: !!OPENAI_API_KEY,
+        hasAnthropicKey: !!ANTHROPIC_API_KEY,
+        hasGoogleKey: !!GOOGLE_API_KEY,
         hasAPISecret: !!API_SECRET,
-        loggingEnabled: true
+        loggingEnabled: true,
+        supportedProviders: {
+            openai: !!OPENAI_API_KEY,
+            anthropic: !!ANTHROPIC_API_KEY,
+            google: !!GOOGLE_API_KEY
+        }
     });
 });
 
@@ -212,9 +228,19 @@ app.get('/api/analytics/summary', async (req, res) => {
 
 app.use('/api', verifyRequest, loggingMiddleware);
 
-// Chat completions endpoint
+// ============================================
+// OPENAI ENDPOINTS
+// ============================================
+
+// Chat completions endpoint (OpenAI)
 app.post('/api/chat/completions', async (req, res) => {
-    console.log('Received chat completion request');
+    console.log('Received chat completion request for OpenAI');
+    
+    if (!OPENAI_API_KEY) {
+        return res.status(503).json({
+            error: { message: 'OpenAI API not configured', type: 'configuration_error' }
+        });
+    }
     
     try {
         const response = await axios.post(
@@ -250,6 +276,12 @@ app.post('/api/chat/completions', async (req, res) => {
 // Whisper transcription endpoint
 app.post('/api/audio/transcriptions', async (req, res) => {
     console.log('Received audio transcription request');
+    
+    if (!OPENAI_API_KEY) {
+        return res.status(503).json({
+            error: { message: 'OpenAI API not configured', type: 'configuration_error' }
+        });
+    }
     
     try {
         // Check if file was uploaded
@@ -304,6 +336,326 @@ app.post('/api/audio/transcriptions', async (req, res) => {
     }
 });
 
+// ============================================
+// ANTHROPIC (CLAUDE) ENDPOINTS
+// ============================================
+
+app.post('/api/anthropic/messages', async (req, res) => {
+    console.log('Received chat completion request for Anthropic Claude');
+    
+    if (!ANTHROPIC_API_KEY) {
+        return res.status(503).json({
+            error: { message: 'Anthropic API not configured', type: 'configuration_error' }
+        });
+    }
+    
+    try {
+        // Transform request to Anthropic format if needed
+        const anthropicRequest = {
+            model: req.body.model || 'claude-sonnet-4-20250514',
+            max_tokens: req.body.max_tokens || 4096,
+            messages: req.body.messages,
+            system: req.body.system
+        };
+        
+        const response = await axios.post(
+            'https://api.anthropic.com/v1/messages',
+            anthropicRequest,
+            {
+                headers: {
+                    'x-api-key': ANTHROPIC_API_KEY,
+                    'Content-Type': 'application/json',
+                    'anthropic-version': '2023-06-01'
+                },
+                timeout: 190000
+            }
+        );
+        
+        console.log('Successfully proxied chat request to Anthropic');
+        
+        // Transform response to match OpenAI format for consistency
+        const transformedResponse = {
+            id: response.data.id,
+            object: 'chat.completion',
+            created: Date.now(),
+            model: response.data.model,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: response.data.content[0]?.text || ''
+                },
+                finish_reason: response.data.stop_reason === 'end_turn' ? 'stop' : response.data.stop_reason
+            }],
+            usage: {
+                prompt_tokens: response.data.usage?.input_tokens || 0,
+                completion_tokens: response.data.usage?.output_tokens || 0,
+                total_tokens: (response.data.usage?.input_tokens || 0) + (response.data.usage?.output_tokens || 0)
+            }
+        };
+        
+        res.json(transformedResponse);
+        
+    } catch (error) {
+        console.error('Anthropic API Error:', error.response?.data || error.message);
+        
+        const statusCode = error.response?.status || 500;
+        const errorData = error.response?.data || {
+            error: {
+                message: error.message || 'Internal server error',
+                type: 'proxy_error'
+            }
+        };
+        
+        res.status(statusCode).json(errorData);
+    }
+});
+
+// ============================================
+// GOOGLE (GEMINI) ENDPOINTS
+// ============================================
+
+app.post('/api/google/generateContent', async (req, res) => {
+    console.log('Received chat completion request for Google Gemini');
+    
+    if (!GOOGLE_API_KEY) {
+        return res.status(503).json({
+            error: { message: 'Google API not configured', type: 'configuration_error' }
+        });
+    }
+    
+    try {
+        const model = req.body.model || 'gemini-2.5-pro';
+        
+        // Transform request to Gemini format
+        const geminiRequest = {
+            contents: req.body.contents || transformMessagesToGeminiFormat(req.body.messages),
+            generationConfig: req.body.generationConfig || {
+                temperature: 0.7,
+                maxOutputTokens: 4096
+            },
+            safetySettings: req.body.safetySettings || [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+            ]
+        };
+        
+        const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GOOGLE_API_KEY}`,
+            geminiRequest,
+            {
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                timeout: 190000
+            }
+        );
+        
+        console.log('Successfully proxied chat request to Google Gemini');
+        
+        // Transform response to match OpenAI format for consistency
+        const geminiContent = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const transformedResponse = {
+            id: `gemini-${Date.now()}`,
+            object: 'chat.completion',
+            created: Date.now(),
+            model: model,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: geminiContent
+                },
+                finish_reason: response.data.candidates?.[0]?.finishReason === 'STOP' ? 'stop' : 'length'
+            }],
+            usage: {
+                prompt_tokens: response.data.usageMetadata?.promptTokenCount || 0,
+                completion_tokens: response.data.usageMetadata?.candidatesTokenCount || 0,
+                total_tokens: response.data.usageMetadata?.totalTokenCount || 0
+            }
+        };
+        
+        res.json(transformedResponse);
+        
+    } catch (error) {
+        console.error('Google Gemini API Error:', error.response?.data || error.message);
+        
+        const statusCode = error.response?.status || 500;
+        const errorData = error.response?.data || {
+            error: {
+                message: error.message || 'Internal server error',
+                type: 'proxy_error'
+            }
+        };
+        
+        res.status(statusCode).json(errorData);
+    }
+});
+
+// Helper function to transform OpenAI-style messages to Gemini format
+function transformMessagesToGeminiFormat(messages) {
+    if (!messages) return [];
+    
+    const contents = [];
+    let systemPrompt = '';
+    
+    for (const msg of messages) {
+        if (msg.role === 'system') {
+            systemPrompt = msg.content;
+            continue;
+        }
+        
+        const role = msg.role === 'assistant' ? 'model' : 'user';
+        
+        // Handle content that may be string or array (for images)
+        let parts = [];
+        
+        if (typeof msg.content === 'string') {
+            // Prepend system prompt to first user message
+            if (role === 'user' && systemPrompt && contents.length === 0) {
+                parts.push({ text: `${systemPrompt}\n\n${msg.content}` });
+                systemPrompt = '';
+            } else {
+                parts.push({ text: msg.content });
+            }
+        } else if (Array.isArray(msg.content)) {
+            // Handle multimodal content (text + images)
+            for (const item of msg.content) {
+                if (item.type === 'text') {
+                    if (role === 'user' && systemPrompt && contents.length === 0) {
+                        parts.push({ text: `${systemPrompt}\n\n${item.text}` });
+                        systemPrompt = '';
+                    } else {
+                        parts.push({ text: item.text });
+                    }
+                } else if (item.type === 'image_url') {
+                    // Extract base64 data from data URL
+                    const imageUrl = item.image_url.url;
+                    if (imageUrl.startsWith('data:')) {
+                        const matches = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+                        if (matches) {
+                            parts.push({
+                                inline_data: {
+                                    mime_type: matches[1],
+                                    data: matches[2]
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        contents.push({ role, parts });
+    }
+    
+    return contents;
+}
+
+// ============================================
+// UNIFIED MULTI-PROVIDER ENDPOINT
+// ============================================
+
+app.post('/api/unified/chat', async (req, res) => {
+    const provider = req.body.provider || 'openai';
+    const model = req.body.model;
+    
+    console.log(`Received unified chat request for provider: ${provider}, model: ${model}`);
+    
+    // Route to appropriate provider
+    switch (provider.toLowerCase()) {
+        case 'openai':
+            req.url = '/api/chat/completions';
+            return app._router.handle(req, res, () => {});
+            
+        case 'anthropic':
+        case 'claude':
+            req.url = '/api/anthropic/messages';
+            return app._router.handle(req, res, () => {});
+            
+        case 'google':
+        case 'gemini':
+            req.url = '/api/google/generateContent';
+            return app._router.handle(req, res, () => {});
+            
+        default:
+            return res.status(400).json({
+                error: {
+                    message: `Unknown provider: ${provider}`,
+                    type: 'invalid_request'
+                }
+            });
+    }
+});
+
+// ============================================
+// FILE UPLOAD ENDPOINT (for document context)
+// ============================================
+
+app.post('/api/files/upload', async (req, res) => {
+    console.log('Received file upload request');
+    
+    try {
+        if (!req.files || Object.keys(req.files).length === 0) {
+            return res.status(400).json({
+                error: { message: 'No files were uploaded' }
+            });
+        }
+        
+        const uploadedFiles = [];
+        const files = Array.isArray(req.files.files) ? req.files.files : [req.files.files];
+        
+        // Process each file
+        for (const file of files) {
+            // Check file size (max 10MB per file)
+            if (file.size > 10 * 1024 * 1024) {
+                return res.status(400).json({
+                    error: { message: `File ${file.name} exceeds 10MB limit` }
+                });
+            }
+            
+            // Extract text content based on file type
+            let textContent = '';
+            const mimeType = file.mimetype;
+            
+            if (mimeType === 'application/pdf') {
+                // For PDF, we'll just send the base64 data
+                // The AI models can handle PDFs directly
+                textContent = null;
+            } else if (mimeType.startsWith('text/') || 
+                       mimeType === 'application/json' ||
+                       mimeType === 'application/xml') {
+                textContent = file.data.toString('utf8');
+            }
+            
+            uploadedFiles.push({
+                name: file.name,
+                mimeType: mimeType,
+                size: file.size,
+                base64: file.data.toString('base64'),
+                textContent: textContent
+            });
+        }
+        
+        res.json({
+            success: true,
+            files: uploadedFiles,
+            count: uploadedFiles.length
+        });
+        
+    } catch (error) {
+        console.error('File upload error:', error);
+        res.status(500).json({
+            error: {
+                message: error.message || 'Failed to process uploaded files',
+                type: 'upload_error'
+            }
+        });
+    }
+});
+
 // Catch-all for undefined routes
 app.use((req, res) => {
     res.status(404).json({
@@ -325,8 +677,10 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`✅ OpenAI Proxy Server running on port ${PORT}`);
+    console.log(`✅ Multi-Provider AI Proxy Server running on port ${PORT}`);
     console.log(`✅ OpenAI API Key: ${OPENAI_API_KEY ? 'Set' : 'NOT SET'}`);
+    console.log(`✅ Anthropic API Key: ${ANTHROPIC_API_KEY ? 'Set' : 'NOT SET'}`);
+    console.log(`✅ Google API Key: ${GOOGLE_API_KEY ? 'Set' : 'NOT SET'}`);
     console.log(`✅ API Secret: ${API_SECRET ? 'Set' : 'NOT SET'}`);
     console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`📊 Usage logging: ENABLED`);
