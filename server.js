@@ -221,6 +221,23 @@ app.get('/api/analytics/summary', async (req, res) => {
     }
 });
 
+// Get platform breakdown stats (NEW ENDPOINT)
+app.get('/api/analytics/platforms', async (req, res) => {
+    try {
+        const stats = await logger.getPlatformStats();
+        res.json(stats);
+    } catch (error) {
+        console.error('Platform analytics error:', error);
+        res.status(500).json({
+            error: 'Failed to fetch platform stats',
+            message: error.message
+        });
+    }
+});
+
+// ... rest of server.js remains the same (all the proxy endpoints)
+// Copy lines 224-699 from the original file
+
 // ============================================
 // PROTECTED API ENDPOINTS (REQUIRE AUTH)
 // Apply logging middleware to API routes (AFTER analytics, so analytics are public)

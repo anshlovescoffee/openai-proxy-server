@@ -19,7 +19,7 @@ class UsageLogger {
         }
     }
     
-    async logRequest(userId, endpoint, model, requestData, responseData) {
+    async logRequest(userId, endpoint, model, requestData, responseData, metadata = {}) {
         const timestamp = new Date().toISOString();
         const date = timestamp.split('T')[0];
         
@@ -32,6 +32,8 @@ class UsageLogger {
             endpoint,
             provider,
             model,
+            platform: metadata.platform || 'unknown',
+            appVersion: metadata.appVersion || 'unknown',
             tokens: {
                 prompt: responseData?.usage?.prompt_tokens || 0,
                 completion: responseData?.usage?.completion_tokens || 0,
@@ -42,8 +44,10 @@ class UsageLogger {
             error: responseData?.error?.message || null
         };
         
-        // Log to console for Railway logs (visible in dashboard)
-        console.log('📊 Usage:', JSON.stringify(logEntry));
+        // Enhanced console logging with platform emoji
+        const platformEmoji = logEntry.platform === 'windows' ? '🪟' : 
+                             logEntry.platform === 'mac' ? '🍎' : '❓';
+        console.log(`📊 ${platformEmoji} Usage:`, JSON.stringify(logEntry));
         
         // Daily log file
         const logFile = path.join(this.logsDir, `usage-${date}.jsonl`);
@@ -130,6 +134,8 @@ class UsageLogger {
                     totalRequests: 0,
                     totalTokens: 0,
                     totalCost: 0,
+                    platform: logEntry.platform,
+                    appVersion: logEntry.appVersion,
                     endpointCounts: {},
                     modelCounts: {},
                     providerCounts: {}
@@ -141,6 +147,14 @@ class UsageLogger {
             userSummary.totalTokens += logEntry.tokens.total;
             userSummary.totalCost += logEntry.cost;
             userSummary.lastSeen = logEntry.timestamp;
+            
+            // Update platform if it changes (shouldn't, but just in case)
+            if (logEntry.platform !== 'unknown') {
+                userSummary.platform = logEntry.platform;
+            }
+            if (logEntry.appVersion !== 'unknown') {
+                userSummary.appVersion = logEntry.appVersion;
+            }
             
             userSummary.endpointCounts[logEntry.endpoint] =
                 (userSummary.endpointCounts[logEntry.endpoint] || 0) + 1;
@@ -216,6 +230,28 @@ class UsageLogger {
         return logs.sort((a, b) =>
             new Date(b.timestamp) - new Date(a.timestamp)
         );
+    }
+    
+    // New method to get platform statistics
+    async getPlatformStats() {
+        const summaries = await this.getAllUserStats();
+        const stats = {
+            windows: { users: 0, requests: 0, tokens: 0, cost: 0 },
+            mac: { users: 0, requests: 0, tokens: 0, cost: 0 },
+            unknown: { users: 0, requests: 0, tokens: 0, cost: 0 }
+        };
+        
+        for (const [userId, userStats] of Object.entries(summaries)) {
+            const platform = userStats.platform || 'unknown';
+            if (stats[platform]) {
+                stats[platform].users++;
+                stats[platform].requests += userStats.totalRequests;
+                stats[platform].tokens += userStats.totalTokens;
+                stats[platform].cost += userStats.totalCost;
+            }
+        }
+        
+        return stats;
     }
 }
 

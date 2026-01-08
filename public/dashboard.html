@@ -1,5 +1,3 @@
-
-cat > public/dashboard.html << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -66,6 +64,49 @@ cat > public/dashboard.html << 'EOF'
             color: #666;
             text-transform: uppercase;
             letter-spacing: 1px;
+        }
+        
+        .platform-breakdown {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .platform-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .platform-card h3 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .platform-emoji {
+            font-size: 32px;
+        }
+        
+        .platform-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 14px;
+        }
+        
+        .platform-stat-label {
+            color: #666;
+        }
+        
+        .platform-stat-value {
+            font-weight: bold;
+            color: #333;
+            text-align: right;
         }
         
         .card {
@@ -158,6 +199,11 @@ cat > public/dashboard.html << 'EOF'
             border-radius: 4px;
         }
         
+        .platform-badge {
+            font-size: 16px;
+            margin-right: 5px;
+        }
+        
         .cost {
             color: #10b981;
             font-weight: 600;
@@ -190,6 +236,8 @@ cat > public/dashboard.html << 'EOF'
         
         <div id="content" style="display: none;">
             <div class="stats-grid" id="stats"></div>
+            
+            <div id="platform-section"></div>
             
             <div class="card">
                 <h2>👥 All Users</h2>
@@ -224,8 +272,14 @@ cat > public/dashboard.html << 'EOF'
                 if (!recentResponse.ok) throw new Error('Failed to fetch recent activity');
                 const recent = await recentResponse.json();
                 
+                // Fetch platform stats
+                const platformResponse = await fetch('/api/analytics/platforms');
+                if (!platformResponse.ok) throw new Error('Failed to fetch platform stats');
+                const platforms = await platformResponse.json();
+                
                 // Display stats
                 displayStats(summary);
+                displayPlatformBreakdown(platforms);
                 displayUsers(allUsers);
                 displayRecentActivity(recent);
                 
@@ -273,6 +327,54 @@ cat > public/dashboard.html << 'EOF'
             `;
         }
         
+        function displayPlatformBreakdown(platforms) {
+            const html = `
+                <h2 style="color: white; margin-bottom: 20px; text-align: center;">Platform Breakdown</h2>
+                <div class="platform-breakdown">
+                    <div class="platform-card">
+                        <h3><span class="platform-emoji">🪟</span> Windows</h3>
+                        <div class="platform-stats">
+                            <div class="platform-stat-label">Users:</div>
+                            <div class="platform-stat-value">${platforms.windows.users}</div>
+                            <div class="platform-stat-label">Requests:</div>
+                            <div class="platform-stat-value">${platforms.windows.requests.toLocaleString()}</div>
+                            <div class="platform-stat-label">Tokens:</div>
+                            <div class="platform-stat-value">${platforms.windows.tokens.toLocaleString()}</div>
+                            <div class="platform-stat-label">Cost:</div>
+                            <div class="platform-stat-value cost">$${platforms.windows.cost.toFixed(4)}</div>
+                        </div>
+                    </div>
+                    <div class="platform-card">
+                        <h3><span class="platform-emoji">🍎</span> Mac</h3>
+                        <div class="platform-stats">
+                            <div class="platform-stat-label">Users:</div>
+                            <div class="platform-stat-value">${platforms.mac.users}</div>
+                            <div class="platform-stat-label">Requests:</div>
+                            <div class="platform-stat-value">${platforms.mac.requests.toLocaleString()}</div>
+                            <div class="platform-stat-label">Tokens:</div>
+                            <div class="platform-stat-value">${platforms.mac.tokens.toLocaleString()}</div>
+                            <div class="platform-stat-label">Cost:</div>
+                            <div class="platform-stat-value cost">$${platforms.mac.cost.toFixed(4)}</div>
+                        </div>
+                    </div>
+                    <div class="platform-card">
+                        <h3><span class="platform-emoji">❓</span> Unknown</h3>
+                        <div class="platform-stats">
+                            <div class="platform-stat-label">Users:</div>
+                            <div class="platform-stat-value">${platforms.unknown.users}</div>
+                            <div class="platform-stat-label">Requests:</div>
+                            <div class="platform-stat-value">${platforms.unknown.requests.toLocaleString()}</div>
+                            <div class="platform-stat-label">Tokens:</div>
+                            <div class="platform-stat-value">${platforms.unknown.tokens.toLocaleString()}</div>
+                            <div class="platform-stat-label">Cost:</div>
+                            <div class="platform-stat-value cost">$${platforms.unknown.cost.toFixed(4)}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('platform-section').innerHTML = html;
+        }
+        
         function displayUsers(data) {
             if (!data.users || Object.keys(data.users).length === 0) {
                 document.getElementById('users-table').innerHTML = '<p>No users yet. Make some requests first!</p>';
@@ -282,6 +384,7 @@ cat > public/dashboard.html << 'EOF'
             const users = Object.entries(data.users).sort((a, b) => b[1].totalRequests - a[1].totalRequests);
             
             let html = '<table><thead><tr>';
+            html += '<th>Platform</th>';
             html += '<th>User ID</th>';
             html += '<th>Requests</th>';
             html += '<th>Tokens</th>';
@@ -293,8 +396,11 @@ cat > public/dashboard.html << 'EOF'
             users.forEach(([userId, stats]) => {
                 const firstSeen = new Date(stats.firstSeen).toLocaleString();
                 const lastSeen = new Date(stats.lastSeen).toLocaleString();
+                const platformEmoji = stats.platform === 'windows' ? '🪟' : 
+                                    stats.platform === 'mac' ? '🍎' : '❓';
                 
                 html += '<tr>';
+                html += `<td><span class="platform-badge">${platformEmoji}</span>${stats.platform || 'unknown'}</td>`;
                 html += `<td><span class="user-id">${userId}</span></td>`;
                 html += `<td><strong>${stats.totalRequests}</strong></td>`;
                 html += `<td>${stats.totalTokens.toLocaleString()}</td>`;
@@ -316,6 +422,7 @@ cat > public/dashboard.html << 'EOF'
 
             let html = '<table><thead><tr>';
             html += '<th>Time</th>';
+            html += '<th>Platform</th>';
             html += '<th>User ID</th>';
             html += '<th>Endpoint</th>';
             html += '<th>Model</th>';
@@ -325,9 +432,12 @@ cat > public/dashboard.html << 'EOF'
             
             data.logs.slice(0, 50).forEach(log => {
                 const time = new Date(log.timestamp).toLocaleString();
+                const platformEmoji = log.platform === 'windows' ? '🪟' : 
+                                    log.platform === 'mac' ? '🍎' : '❓';
                 
                 html += '<tr>';
                 html += `<td class="timestamp">${time}</td>`;
+                html += `<td><span class="platform-badge">${platformEmoji}</span>${log.platform || 'unknown'}</td>`;
                 html += `<td><span class="user-id">${log.userId.substring(0, 12)}...</span></td>`;
                 html += `<td>${log.endpoint}</td>`;
                 html += `<td>${log.model || 'N/A'}</td>`;
@@ -353,4 +463,3 @@ cat > public/dashboard.html << 'EOF'
     </script>
 </body>
 </html>
-EOF

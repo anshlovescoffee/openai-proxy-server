@@ -3,10 +3,17 @@ const logger = require('../logger');
 
 async function loggingMiddleware(req, res, next) {
     const userId = req.headers['x-user-id'] || 'unknown';
+    const platform = req.headers['x-platform'] || 'unknown';
+    const appVersion = req.headers['x-app-version'] || 'unknown';
     const endpoint = req.path;
     const model = req.body?.model;
     
-    console.log(`📝 Request from user: ${userId.substring(0, 12)}..., endpoint: ${endpoint}, model: ${model}`);
+    // Enhanced logging with platform info
+    const platformLabel = platform === 'windows' ? '🪟' : 
+                         platform === 'mac' ? '🍎' : 
+                         '❓';
+    
+    console.log(`📝 Request from ${platformLabel} ${platform} | user: ${userId.substring(0, 12)}... | endpoint: ${endpoint} | model: ${model}`);
     
     // Capture the original json and send functions
     const originalJson = res.json.bind(res);
@@ -30,8 +37,10 @@ async function loggingMiddleware(req, res, next) {
     };
     
     function logResponse(responseData) {
-        logger.logRequest(userId, endpoint, model, req.body, responseData)
-            .catch(err => console.error('❌ Logging error:', err));
+        logger.logRequest(userId, endpoint, model, req.body, responseData, {
+            platform,
+            appVersion
+        }).catch(err => console.error('❌ Logging error:', err));
     }
     
     next();
